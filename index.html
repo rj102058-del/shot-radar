@@ -1,0 +1,209 @@
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shot Radar NHL</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d16;color:#edf4ff;font-family:Arial,sans-serif}
+header{padding:22px;background:#101b2c;border-bottom:2px solid #16e0a0}
+h1{margin:0;color:#20e6a2;font-size:29px}
+.sub{color:#91a5bc;margin-top:6px}
+main{max-width:950px;margin:auto;padding:18px}
+.panel{background:#111d2e;border:1px solid #273c55;border-radius:12px;padding:16px;margin-bottom:16px}
+h2{font-size:18px;margin:0 0 12px}
+button{background:#13d99a;color:#06130e;border:0;border-radius:7px;padding:11px 15px;font-weight:bold;cursor:pointer}
+input{background:#080f1c;color:white;border:1px solid #38516e;border-radius:7px;padding:11px;min-width:0}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.status{color:#20e6a2;font-size:13px;margin-top:12px}
+.game{border-bottom:1px solid #293b50;padding:13px 0}
+.game:last-child{border:0}
+.teams{font-weight:bold;font-size:17px}
+.muted{color:#91a5bc;font-size:13px;margin-top:5px}
+.player{display:flex;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid #293b50}
+.player:last-child{border:0}
+.shots{color:#20e6a2;font-weight:bold;font-size:19px}
+.tag{color:#20e6a2;font-size:11px}
+.empty{color:#91a5bc;padding:15px 0}
+</style>
+</head>
+<body>
+<header>
+<h1>🏒 SHOT RADAR</h1>
+<div class="sub">Live NHL shots on goal tracker</div>
+</header>
+<main>
+<section class="panel">
+<h2>📡 Live Control Center</h2>
+<div class="row">
+<button onclick="refreshAll()">↻ Refresh Now</button>
+<button onclick="enableAlerts()">🔔 Enable Alerts</button>
+</div>
+<div class="status" id="status">Connecting to NHL data...</div>
+<div class="muted">Automatic refresh every 30 seconds</div>
+</section>
+
+<section class="panel">
+<h2>🏒 Today's NHL Games</h2>
+<div id="games"><div class="empty">Loading games...</div></div>
+</section>
+
+<section class="panel">
+<h2>🎯 Player Shot Watchlist</h2>
+<div class="row">
+<input id="playerName" placeholder="Enter player name">
+<button onclick="addPlayer()">+ Track Player</button>
+</div>
+<div class="muted">Add players to monitor their live shots.</div>
+<div id="watchlist"></div>
+</section>
+
+<section class="panel">
+<h2>🔥 Players With 2+ Shots</h2>
+<div id="leaders"><div class="empty">Waiting for live stats...</div></div>
+</section>
+</main>
+
+<script>
+const API="https://api-web.nhle.com/v1";
+let watched=[];
+let alerted={};
+let games=[];
+
+function teamName(team){
+ return team?.abbrev || team?.commonName?.default || "TBD";
+}
+function playerName(p){
+ return p?.name?.default || p?.name || p?.firstName?.default+" "+p?.lastName?.default || "Unknown";
+}
+function getPlayers(data){
+ const groups=data.playerByGameStats || data.boxscore?.playerByGameStats || {};
+ let result=[];
+ ["awayTeam","homeTeam"].forEach(side=>{
+  const team=groups[side] || {};
+  ["forwards","defense","defensemen"].forEach(group=>{
+   (team[group] || []).forEach(p=>{
+    result.push({...p,side});
+   });
+  });
+ });
+ if(!result.length && data.boxscore?.skaters){
+  Object.values(data.boxscore.skaters).flat().forEach(p=>result.push(p));
+ }
+ return result;
+}
+async function refreshAll(){
+ const status=document.getElementById("status");
+ status.textContent="Updating live NHL data...";
+ try{
+  const response=await fetch(API+"/score/now");
+  if(!response.ok)throw Error("NHL scoreboard unavailable");
+  const data=await response.json();
+  games=data.games || [];
+  renderGames();
+  let all=[];
+  await Promise.all(games.filter(g=>g.id).map(async g=>{
+   try{
+    const r=await fetch(API+"/gamecenter/"+g.id+"/boxscore");
+    if(!r.ok)return;
+    const box=await r.json();
+    const players=getPlayers(box);
+    players.forEach(p=>{
+     p.team=teamName(p.side==="awayTeam"?g.awayTeam:g.homeTeam);
+     p.game=g;
+    });
+    all.push(...players);
+   }catch(e){console.log(e)}
+  }));
+  renderPlayers(all);
+  status.textContent="● Live connection checked "+new Date().toLocaleTimeString();
+ }catch(e){
+  status.textContent="Connection error: "+e.message+". Try refreshing.";
+ }
+}
+function renderGames(){
+ const el=document.getElementById("games");
+ if(!games.length){
+  el.innerHTML='<div class="empty">No NHL games scheduled today.</div>';
+  return;
+ }
+ el.innerHTML=games.map(g=>{
+  const away=teamName(g.awayTeam),home=teamName(g.homeTeam);
+  const state=g.gameState || "Scheduled";
+  return `<div class="game">
+   <div class="teams">${away} ${g.awayTeam?.score??0} — ${g.homeTeam?.score??0} ${home}</div>
+   <div class="muted">${state} · ${g.periodDescriptor?.periodType || ""} ${g.clock?.timeRemaining || ""}</div>
+   <div class="muted">Team shots: ${g.awayTeam?.sog??"-"} — ${g.homeTeam?.sog??"-"}</div>
+  </div>`;
+ }).join("");
+}
+function renderPlayers(players){
+ const el=document.getElementById("leaders");
+ const sorted=players.filter(p=>Number(p.sog??p.shots)>=2)
+  .sort((a,b)=>Number(b.sog??b.shots)-Number(a.sog??a.shots));
+ if(!sorted.length){
+  el.innerHTML='<div class="empty">No player has registered 2+ shots yet, or player stats are unavailable.</div>';
+ }else{
+  el.innerHTML=sorted.map(p=>`
+   <div class="player">
+    <div><b>${playerName(p)}</b><div class="muted">${p.team || ""} · ${p.position || ""}</div></div>
+    <div class="shots">${p.sog??p.shots} SOG</div>
+   </div>`).join("");
+ }
+ watched.forEach(name=>{
+  const p=players.find(x=>playerName(x).toLowerCase()===name.toLowerCase());
+  if(!p)return;
+  const shots=Number(p.sog??p.shots??0);
+  [2,3,4].forEach(n=>{
+   const key=name+"-"+n;
+   if(shots>=n && !alerted[key]){
+    alerted[key]=true;
+    if(Notification.permission==="granted"){
+     new Notification("🏒 SHOT RADAR ALERT",{
+      body:name+" has "+shots+" shots on goal!"
+     });
+    }
+   }
+  });
+ });
+ renderWatchlist(players);
+}
+function addPlayer(){
+ const input=document.getElementById("playerName");
+ const name=input.value.trim();
+ if(!name)return;
+ if(!watched.some(x=>x.toLowerCase()===name.toLowerCase())){
+  watched.push(name);
+  renderWatchlist([]);
+ }
+ input.value="";
+}
+function removePlayer(name){
+ watched=watched.filter(x=>x!==name);
+ renderWatchlist([]);
+}
+function renderWatchlist(players){
+ const el=document.getElementById("watchlist");
+ if(!watched.length){
+  el.innerHTML='<div class="empty">No players added yet.</div>';
+  return;
+ }
+ el.innerHTML=watched.map(name=>{
+  const p=players.find(x=>playerName(x).toLowerCase()===name.toLowerCase());
+  return `<div class="player"><div><b>${name}</b><div class="muted">${p?(p.sog??p.shots??0)+" SOG":"Waiting for stats / exact name match"}</div></div><button onclick="removePlayer('${name.replace(/'/g,"\\'")}')">Remove</button></div>`;
+ }).join("");
+}
+async function enableAlerts(){
+ if(!("Notification" in window)){
+  alert("Browser notifications are not supported here.");
+  return;
+ }
+ const permission=await Notification.requestPermission();
+ alert(permission==="granted"?"Shot Radar alerts enabled!":"Notifications were not enabled.");
+}
+refreshAll();
+setInterval(refreshAll,30000);
+</script>
+</body>
+</html>
